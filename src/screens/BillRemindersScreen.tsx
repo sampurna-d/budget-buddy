@@ -13,6 +13,7 @@ import { colors, spacing, typography } from '../constants/theme';
 import { supabase } from '../config/supabase';
 import { useAuth } from '../contexts/AuthContext';
 import AddBillReminderModal from '../components/AddBillReminderModal';
+import { NotificationService } from '../services/notificationService';
 
 interface BillReminder {
   id: string;
@@ -32,7 +33,22 @@ const BillRemindersScreen = () => {
 
   useEffect(() => {
     fetchReminders();
+    initializeNotifications();
   }, []);
+
+  const initializeNotifications = async () => {
+    try {
+      const initialized = await NotificationService.initialize();
+      if (!initialized) {
+        Alert.alert(
+          'Notifications Disabled',
+          'Enable notifications to receive bill reminders.'
+        );
+      }
+    } catch (error) {
+      console.error('Error initializing notifications:', error);
+    }
+  };
 
   const fetchReminders = async () => {
     try {
@@ -46,6 +62,11 @@ const BillRemindersScreen = () => {
       if (error) throw error;
 
       setReminders(data || []);
+      
+      // Schedule notifications for all active reminders
+      for (const reminder of data || []) {
+        await NotificationService.scheduleBillReminder(reminder);
+      }
     } catch (error: any) {
       console.error('Fetch reminders error:', error);
       Alert.alert('Error', 'Failed to load bill reminders');
@@ -80,12 +101,20 @@ const BillRemindersScreen = () => {
 
   const togglePaid = async (reminder: BillReminder) => {
     try {
+      const updatedReminder = { ...reminder, paid: !reminder.paid };
       const { error } = await supabase
         .from('bill_reminders')
-        .update({ paid: !reminder.paid })
+        .update({ paid: updatedReminder.paid })
         .eq('id', reminder.id);
 
       if (error) throw error;
+
+      // Update notifications based on paid status
+      if (updatedReminder.paid) {
+        await NotificationService.cancelBillReminder(reminder.id);
+      } else {
+        await NotificationService.scheduleBillReminder(updatedReminder);
+      }
 
       await fetchReminders();
     } catch (error: any) {

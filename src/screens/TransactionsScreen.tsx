@@ -1,143 +1,198 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Alert,
-  ActivityIndicator,
+  RefreshControl,
+  ActivityIndicator
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors, spacing, typography } from '../constants/theme';
-import { supabase } from '../config/supabase';
-import { useAuth } from '../contexts/AuthContext';
-import TransactionItem from '../components/TransactionItem';
-import AddTransactionModal from '../components/AddTransactionModal';
+import { useTransactions } from '../hooks/useTransactions';
+import { FlashList, ListRenderItem } from '@shopify/flash-list';
+import { Transaction } from '../types/transaction';
 
-interface Transaction {
-  id: string;
-  user_id: string;
-  amount: number;
-  type: 'expense' | 'income';
-  category: string;
-  description: string;
-  date: string;
-}
+const formatDate = (dateString: string) => {
+  const date = new Date(dateString);
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric'
+  });
+};
+
+const formatAmount = (amount: number) => {
+  return amount.toLocaleString('en-US', {
+    style: 'currency',
+    currency: 'USD'
+  });
+};
+
+const getTransactionIcon = (category: string): keyof typeof MaterialCommunityIcons.glyphMap => {
+  const iconMap: { [key: string]: keyof typeof MaterialCommunityIcons.glyphMap } = {
+    'Food': 'food',
+    'Transportation': 'car',
+    'Housing': 'home',
+    'Entertainment': 'movie',
+    'Other': 'cash'
+  };
+
+  return iconMap[category] || 'cash';
+};
 
 const TransactionsScreen = () => {
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [showAddModal, setShowAddModal] = useState(false);
-  const { user } = useAuth();
+  const { 
+    transactions, 
+    isLoading, 
+    error, 
+    hasMore, 
+    loadMore,
+    refresh 
+  } = useTransactions();
+  
+  const [refreshing, setRefreshing] = useState(false);
+  const [selectedType, setSelectedType] = useState<'all' | 'income' | 'expense'>('all');
 
-  useEffect(() => {
-    fetchTransactions();
-  }, []);
-
-  const fetchTransactions = async () => {
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
     try {
-      const { data, error } = await supabase
-        .from('transactions')
-        .select('*')
-        .eq('user_id', user?.id)
-        .order('date', { ascending: false });
-
-      if (error) throw error;
-
-      setTransactions(data || []);
-    } catch (error: any) {
-      console.error('Fetch transactions error:', error);
-      Alert.alert('Error', 'Failed to load transactions');
+      await refresh();
+    } catch (error) {
+      console.error('Error refreshing transactions:', error);
     } finally {
-      setLoading(false);
+      setRefreshing(false);
     }
-  };
+  }, [refresh]);
 
-  const handleAddTransaction = () => {
-    setShowAddModal(true);
-  };
+  const filteredTransactions = transactions.filter(t => 
+    selectedType === 'all' || t.type === selectedType
+  );
 
-  const groupTransactionsByDate = (transactions: Transaction[]) => {
-    const groups: { [key: string]: Transaction[] } = {};
-    
-    transactions.forEach(transaction => {
-      const date = new Date(transaction.date).toLocaleDateString();
-      if (!groups[date]) {
-        groups[date] = [];
-      }
-      groups[date].push(transaction);
-    });
+  const renderTransactionItem: ListRenderItem<Transaction> = useCallback(({ item: transaction }) => (
+    <View style={styles.transactionCard}>
+      <View style={styles.transactionIcon}>
+        <MaterialCommunityIcons 
+          name={getTransactionIcon(transaction.category || 'Other')}
+          size={24}
+          color={colors.primary}
+        />
+      </View>
+      <View style={styles.transactionInfo}>
+        <Text style={styles.transactionName}>
+          {transaction.description}
+        </Text>
+        <Text style={styles.transactionMeta}>
+          {transaction.institution_name || 'Manual'} • {transaction.category}
+        </Text>
+      </View>
+      <Text style={[
+        styles.transactionAmount,
+        transaction.type === 'income' 
+          ? styles.incomeAmount 
+          : styles.expenseAmount
+      ]}>
+        {transaction.type === 'income' ? '+' : '-'}
+        {formatAmount(transaction.amount)}
+      </Text>
+    </View>
+  ), []);
 
-    return groups;
-  };
-
-  if (loading) {
+  if (error) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={colors.primary} />
+      <View style={styles.centerContainer}>
+        <MaterialCommunityIcons 
+          name="alert-circle-outline" 
+          size={48} 
+          color={colors.error} 
+        />
+        <Text style={styles.errorText}>{error}</Text>
+        <TouchableOpacity 
+          style={styles.retryButton}
+          onPress={onRefresh}
+        >
+          <Text style={styles.retryButtonText}>Retry</Text>
+        </TouchableOpacity>
       </View>
     );
   }
 
-  const groupedTransactions = groupTransactionsByDate(transactions);
-
   return (
     <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Transactions</Text>
-        <TouchableOpacity
-          style={styles.addButton}
-          onPress={handleAddTransaction}
+      {/* Filter Buttons */}
+      <View style={styles.filterContainer}>
+        <TouchableOpacity 
+          style={[
+            styles.filterButton,
+            selectedType === 'all' && styles.filterButtonActive
+          ]}
+          onPress={() => setSelectedType('all')}
         >
-          <MaterialCommunityIcons
-            name="plus"
-            size={24}
-            color={colors.textLight}
-          />
+          <Text style={[
+            styles.filterButtonText,
+            selectedType === 'all' && styles.filterButtonTextActive
+          ]}>All</Text>
+        </TouchableOpacity>
+        <TouchableOpacity 
+          style={[
+            styles.filterButton,
+            selectedType === 'income' && styles.filterButtonActive
+          ]}
+          onPress={() => setSelectedType('income')}
+        >
+          <Text style={[
+            styles.filterButtonText,
+            selectedType === 'income' && styles.filterButtonTextActive
+          ]}>Income</Text>
+        </TouchableOpacity>
+        <TouchableOpacity 
+          style={[
+            styles.filterButton,
+            selectedType === 'expense' && styles.filterButtonActive
+          ]}
+          onPress={() => setSelectedType('expense')}
+        >
+          <Text style={[
+            styles.filterButtonText,
+            selectedType === 'expense' && styles.filterButtonTextActive
+          ]}>Expenses</Text>
         </TouchableOpacity>
       </View>
 
-      <ScrollView style={styles.content}>
-        {Object.entries(groupedTransactions).map(([date, transactions]) => (
-          <View key={date} style={styles.dateGroup}>
-            <Text style={styles.dateHeader}>{date}</Text>
-            {transactions.map(transaction => (
-              <TransactionItem
-                key={transaction.id}
-                type={transaction.type}
-                amount={transaction.amount}
-                category={transaction.category}
-                date={new Date(transaction.date)}
-                description={transaction.description}
+      <FlashList
+        data={filteredTransactions}
+        renderItem={renderTransactionItem}
+        estimatedItemSize={80}
+        onEndReached={loadMore}
+        onEndReachedThreshold={0.5}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+        ListEmptyComponent={
+          isLoading ? (
+            <View style={styles.centerContainer}>
+              <ActivityIndicator size="large" color={colors.primary} />
+              <Text style={styles.loadingText}>Loading transactions...</Text>
+            </View>
+          ) : (
+            <View style={styles.centerContainer}>
+              <MaterialCommunityIcons 
+                name="cash-remove" 
+                size={48} 
+                color={colors.gray[400]} 
               />
-            ))}
-          </View>
-        ))}
-
-        {transactions.length === 0 && (
-          <View style={styles.emptyState}>
-            <MaterialCommunityIcons
-              name="currency-usd-off"
-              size={48}
-              color={colors.gray[400]}
-            />
-            <Text style={styles.emptyStateText}>No transactions yet</Text>
-            <TouchableOpacity
-              style={styles.emptyStateButton}
-              onPress={handleAddTransaction}
-            >
-              <Text style={styles.emptyStateButtonText}>Add Transaction</Text>
-            </TouchableOpacity>
-          </View>
-        )}
-      </ScrollView>
-
-      <AddTransactionModal
-        visible={showAddModal}
-        onClose={() => setShowAddModal(false)}
-        onAdd={fetchTransactions}
-        userId={user?.id || ''}
+              <Text style={styles.noTransactionsText}>No transactions found</Text>
+            </View>
+          )
+        }
+        ListFooterComponent={
+          hasMore && !refreshing ? (
+            <View style={styles.footerLoader}>
+              <ActivityIndicator size="small" color={colors.primary} />
+            </View>
+          ) : null
+        }
       />
     </View>
   );
@@ -146,70 +201,127 @@ const TransactionsScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.gray[100],
+    backgroundColor: colors.backgroundLight,
   },
-  loadingContainer: {
+  centerContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    padding: spacing.xl,
+  },
+  filterContainer: {
+    flexDirection: 'row',
+    padding: spacing.md,
+    backgroundColor: colors.backgroundLight,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray[200],
+  },
+  filterButton: {
+    flex: 1,
+    paddingVertical: spacing.sm,
+    marginHorizontal: spacing.xs,
+    borderRadius: 20,
+    alignItems: 'center',
     backgroundColor: colors.gray[100],
   },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: spacing.lg,
+  filterButtonActive: {
     backgroundColor: colors.primary,
   },
-  title: {
-    fontSize: typography.sizes.xl,
-    fontWeight: '700',
+  filterButtonText: {
+    color: colors.gray[600],
+    fontSize: typography.sizes.sm,
+    fontWeight: '600',
+  },
+  filterButtonTextActive: {
     color: colors.textLight,
   },
-  addButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  content: {
+  scrollView: {
     flex: 1,
-    padding: spacing.md,
   },
   dateGroup: {
-    marginBottom: spacing.lg,
+    marginBottom: spacing.md,
   },
   dateHeader: {
     fontSize: typography.sizes.sm,
     fontWeight: '600',
     color: colors.gray[600],
-    marginBottom: spacing.sm,
-    marginLeft: spacing.xs,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.gray[100],
   },
-  emptyState: {
-    flex: 1,
+  transactionCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: spacing.md,
+    backgroundColor: colors.backgroundLight,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray[200],
+  },
+  transactionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.gray[100],
     justifyContent: 'center',
     alignItems: 'center',
-    paddingVertical: spacing.xxl,
   },
-  emptyStateText: {
-    fontSize: typography.sizes.lg,
+  transactionInfo: {
+    flex: 1,
+    marginLeft: spacing.md,
+  },
+  transactionName: {
+    fontSize: typography.sizes.md,
+    fontWeight: '500',
+    color: colors.textDark,
+  },
+  transactionMeta: {
+    fontSize: typography.sizes.sm,
     color: colors.gray[600],
-    marginTop: spacing.md,
-    marginBottom: spacing.lg,
+    marginTop: 2,
   },
-  emptyStateButton: {
-    backgroundColor: colors.primary,
+  transactionAmount: {
+    fontSize: typography.sizes.md,
+    fontWeight: '600',
+    marginLeft: spacing.md,
+  },
+  incomeAmount: {
+    color: colors.success,
+  },
+  expenseAmount: {
+    color: colors.error,
+  },
+  loadingText: {
+    marginTop: spacing.md,
+    color: colors.gray[600],
+    fontSize: typography.sizes.md,
+  },
+  noTransactionsText: {
+    marginTop: spacing.md,
+    color: colors.gray[600],
+    fontSize: typography.sizes.md,
+    textAlign: 'center',
+  },
+  errorText: {
+    marginTop: spacing.md,
+    color: colors.error,
+    fontSize: typography.sizes.md,
+    textAlign: 'center',
+  },
+  retryButton: {
+    marginTop: spacing.md,
+    paddingVertical: spacing.sm,
     paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
+    backgroundColor: colors.primary,
     borderRadius: 8,
   },
-  emptyStateButtonText: {
+  retryButtonText: {
     color: colors.textLight,
     fontSize: typography.sizes.md,
     fontWeight: '600',
+  },
+  footerLoader: {
+    paddingVertical: spacing.md,
+    alignItems: 'center',
   },
 });
 

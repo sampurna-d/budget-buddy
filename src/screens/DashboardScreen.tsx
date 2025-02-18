@@ -1,185 +1,328 @@
-import React from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  ScrollView,
+  RefreshControl,
+  Alert,
+} from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { colors, spacing, typography, shadows } from '../constants/theme';
-import TransactionItem from '../components/TransactionItem';
-
-// Temporary mock data
-const mockTransactions = [
-  {
-    id: '1',
-    type: 'expense',
-    amount: 65.20,
-    category: 'Shopping',
-    date: new Date(),
-    description: 'Walmart',
-  },
-  {
-    id: '2',
-    type: 'expense',
-    amount: 1200.00,
-    category: 'Housing',
-    date: new Date(Date.now() - 86400000), // Yesterday
-    description: 'Rent',
-  },
-];
-
-const QuickAction = ({ 
-  icon, 
-  label, 
-  onPress 
-}: { 
-  icon: keyof typeof MaterialCommunityIcons.glyphMap; 
-  label: string; 
-  onPress: () => void 
-}) => (
-  <TouchableOpacity style={styles.quickAction} onPress={onPress}>
-    <View style={styles.quickActionIcon}>
-      <MaterialCommunityIcons name={icon} size={24} color={colors.primary} />
-    </View>
-    <Text style={styles.quickActionLabel}>{label}</Text>
-  </TouchableOpacity>
-);
+import { useNavigation } from '@react-navigation/native';
+import { colors, spacing, typography } from '../constants/theme';
+import { supabase } from '../config/supabase';
+import { useAuth } from '../contexts/AuthContext';
+import AddTransactionModal from '../components/AddTransactionModal';
+import AddBillReminderModal from '../components/AddBillReminderModal';
+import { LinkedAccountsModal } from '../components/LinkedAccountsModal';
+import SettingsDropdown from '../components/SettingsDropdown';
+import { usePlaidLink } from '../hooks/usePlaidLink';
+import { useTransactions } from '../hooks/useTransactions';
 
 const DashboardScreen = () => {
-  const handleQuickAction = (action: string) => {
-    // TODO: Implement quick actions
-    console.log(`Quick action: ${action}`);
+  const navigation = useNavigation<any>();
+  const { user, signOut } = useAuth();
+  const { linkToken, generateLinkToken, exchangePublicToken } = usePlaidLink();
+  const { transactions, isLoading: transactionsLoading, fetchTransactions } = useTransactions();
+  const [refreshing, setRefreshing] = useState(false);
+  const [totalBalance, setTotalBalance] = useState(0);
+  const [showAddTransaction, setShowAddTransaction] = useState(false);
+  const [showAddBillReminder, setShowAddBillReminder] = useState(false);
+  const [showLinkedAccounts, setShowLinkedAccounts] = useState(false);
+  const [showSettingsDropdown, setShowSettingsDropdown] = useState(false);
+
+  // Calculate total balance from transactions
+  useEffect(() => {
+    const balance = transactions.reduce((acc, curr) => {
+      return curr.type === 'income' ? acc + curr.amount : acc - curr.amount;
+    }, 0);
+    setTotalBalance(balance);
+  }, [transactions]);
+
+  // Fetch transactions
+  useEffect(() => {
+    fetchTransactions();
+  }, [user]);
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await fetchTransactions();
+    setRefreshing(false);
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut();
+    } catch (error) {
+      console.error('Logout error:', error);
+      Alert.alert('Error', 'Failed to log out');
+    }
   };
 
   return (
-    <ScrollView style={styles.container}>
+    <View style={styles.container}>
+      {/* Header with Settings */}
       <View style={styles.header}>
-        <Text style={styles.title}>Dashboard</Text>
-      </View>
-      
-      {/* Balance Card */}
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Total Balance</Text>
-        <Text style={styles.balanceAmount}>$3,250.00</Text>
+        <Text style={styles.headerTitle}>Dashboard</Text>
+        <TouchableOpacity onPress={() => setShowSettingsDropdown(!showSettingsDropdown)}>
+          <MaterialCommunityIcons name="cog" size={24} color={colors.textDark} />
+        </TouchableOpacity>
       </View>
 
-      {/* Budget Progress */}
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Monthly Budget</Text>
-        <View style={styles.progressBar}>
-          <View style={[styles.progressFill, { width: '70%' }]} />
+      <ScrollView
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+      >
+        {/* Balance Card */}
+        <View style={styles.balanceCard}>
+          <Text style={styles.balanceLabel}>Total Balance</Text>
+          <Text style={styles.balanceAmount}>
+            ${totalBalance.toFixed(2)}
+          </Text>
         </View>
-        <Text style={styles.progressText}>$2,100 / $3,000</Text>
-      </View>
 
-      {/* Quick Actions */}
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Quick Actions</Text>
-        <View style={styles.actionButtons}>
-          <QuickAction
-            icon="plus-circle-outline"
-            label="Add"
-            onPress={() => handleQuickAction('add')}
-          />
-          <QuickAction
-            icon="chart-box-outline"
-            label="Budget"
-            onPress={() => handleQuickAction('budget')}
-          />
-          <QuickAction
-            icon="bell-outline"
-            label="Bills"
-            onPress={() => handleQuickAction('bills')}
-          />
-        </View>
-      </View>
-
-      {/* Recent Transactions */}
-      <View style={styles.card}>
-        <Text style={styles.cardTitle}>Recent Transactions</Text>
-        <View style={styles.transactionsList}>
-          {mockTransactions.map(transaction => (
-            <TransactionItem
-              key={transaction.id}
-              {...transaction}
+        {/* Quick Actions */}
+        <View style={styles.quickActions}>
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() => setShowAddTransaction(true)}
+          >
+            <MaterialCommunityIcons
+              name="plus-circle"
+              size={24}
+              color={colors.primary}
             />
-          ))}
+            <Text style={styles.actionText}>Add Transaction</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() => setShowAddBillReminder(true)}
+          >
+            <MaterialCommunityIcons
+              name="bell-plus"
+              size={24}
+              color={colors.primary}
+            />
+            <Text style={styles.actionText}>Add Reminder</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.actionButton}
+            onPress={() => navigation.navigate('Budget')}
+          >
+            <MaterialCommunityIcons
+              name="chart-pie"
+              size={24}
+              color={colors.primary}
+            />
+            <Text style={styles.actionText}>View Budget</Text>
+          </TouchableOpacity>
         </View>
-      </View>
-    </ScrollView>
+
+        {/* Recent Transactions */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Recent Transactions</Text>
+          {transactions.length > 0 ? (
+            transactions.slice(0, 5).map((transaction) => (
+              <View key={transaction.id} style={styles.transaction}>
+                <View style={styles.transactionLeft}>
+                  <Text style={styles.transactionTitle}>{transaction.description}</Text>
+                  <Text style={styles.transactionCategory}>
+                    {transaction.institution_name} • {transaction.category}
+                  </Text>
+                </View>
+                <Text
+                  style={[
+                    styles.transactionAmount,
+                    { color: transaction.type === 'income' ? colors.success : colors.error },
+                  ]}
+                >
+                  {transaction.type === 'income' ? '+' : '-'}${transaction.amount.toFixed(2)}
+                </Text>
+              </View>
+            ))
+          ) : (
+            <Text style={styles.emptyText}>No recent transactions</Text>
+          )}
+        </View>
+
+        <View style={styles.buttonContainer}>
+          <TouchableOpacity 
+            style={styles.addButton}
+            onPress={() => {
+              generateLinkToken();
+              setShowLinkedAccounts(true);
+            }}
+          >
+            <MaterialCommunityIcons 
+              name="plus-circle" 
+              size={24} 
+              color={colors.textLight} 
+            />
+            <Text style={styles.addButtonText}>Link New Account</Text>
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
+
+      {/* Modals */}
+      <AddTransactionModal
+        visible={showAddTransaction}
+        onClose={() => setShowAddTransaction(false)}
+        onAdd={() => {
+          setShowAddTransaction(false);
+          fetchTransactions();
+        }}
+        userId={user?.id || ''}
+      />
+
+      <AddBillReminderModal
+        visible={showAddBillReminder}
+        onClose={() => setShowAddBillReminder(false)}
+        onAdd={() => {
+          setShowAddBillReminder(false);
+          fetchTransactions();
+        }}
+        userId={user?.id || ''}
+      />
+
+      <LinkedAccountsModal
+        visible={showLinkedAccounts}
+        onClose={() => setShowLinkedAccounts(false)}
+        linkToken={linkToken}
+        generateLinkToken={generateLinkToken}
+        exchangePublicToken={exchangePublicToken}
+        onSuccess={(publicToken) => {
+          console.log('Got public token:', publicToken);
+          fetchTransactions();
+        }}
+      />
+
+      {showSettingsDropdown && (
+        <SettingsDropdown
+          onLinkBank={() => { 
+            setShowSettingsDropdown(false);
+            navigation.navigate('LinkAccountsScreen');
+          }}
+          onSystemSettings={() => { 
+            setShowSettingsDropdown(false);
+            navigation.navigate('SystemSettingsScreen');
+          }}
+          onLogout={() => { 
+            setShowSettingsDropdown(false);
+            handleLogout();
+          }}
+          onClose={() => setShowSettingsDropdown(false)}
+        />
+      )}
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.gray[100],
+    backgroundColor: colors.backgroundLight,
   },
   header: {
-    padding: spacing.lg,
-    backgroundColor: colors.primary,
-  },
-  title: {
-    fontSize: typography.sizes.xl,
-    fontWeight: '700',
-    color: colors.textLight,
-  },
-  card: {
-    margin: spacing.md,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     padding: spacing.lg,
     backgroundColor: colors.backgroundLight,
-    borderRadius: 12,
-    ...shadows.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray[200],
   },
-  cardTitle: {
-    fontSize: typography.sizes.md,
+  headerTitle: {
+    fontSize: typography.sizes.xl,
     fontWeight: '600',
     color: colors.textDark,
-    marginBottom: spacing.sm,
+  },
+  balanceCard: {
+    margin: spacing.lg,
+    padding: spacing.xl,
+    backgroundColor: colors.primary,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  balanceLabel: {
+    fontSize: typography.sizes.md,
+    color: colors.textLight,
+    opacity: 0.9,
   },
   balanceAmount: {
-    fontSize: typography.sizes.xxxl,
+    fontSize: typography.sizes.xxl,
     fontWeight: '700',
-    color: colors.primary,
+    color: colors.textLight,
     marginTop: spacing.sm,
   },
-  progressBar: {
-    height: 8,
-    backgroundColor: colors.gray[200],
-    borderRadius: 4,
-    marginVertical: spacing.sm,
-  },
-  progressFill: {
-    height: '100%',
-    backgroundColor: colors.secondary,
-    borderRadius: 4,
-  },
-  progressText: {
-    fontSize: typography.sizes.sm,
-    color: colors.gray[600],
-    textAlign: 'right',
-  },
-  actionButtons: {
+  quickActions: {
     flexDirection: 'row',
     justifyContent: 'space-around',
-    marginTop: spacing.sm,
+    padding: spacing.lg,
+    backgroundColor: colors.backgroundLight,
   },
-  quickAction: {
+  actionButton: {
     alignItems: 'center',
   },
-  quickActionIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: colors.gray[100],
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: spacing.xs,
-    ...shadows.xs,
-  },
-  quickActionLabel: {
+  actionText: {
+    marginTop: spacing.xs,
     fontSize: typography.sizes.sm,
+    color: colors.textDark,
+  },
+  section: {
+    padding: spacing.lg,
+  },
+  sectionTitle: {
+    fontSize: typography.sizes.lg,
+    fontWeight: '600',
+    color: colors.textDark,
+    marginBottom: spacing.md,
+  },
+  transaction: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.gray[200],
+  },
+  transactionLeft: {
+    flex: 1,
+  },
+  transactionTitle: {
+    fontSize: typography.sizes.md,
     color: colors.textDark,
     fontWeight: '500',
   },
-  transactionsList: {
-    marginTop: spacing.sm,
+  transactionCategory: {
+    fontSize: typography.sizes.sm,
+    color: colors.gray[600],
+    marginTop: spacing.xs,
+  },
+  transactionAmount: {
+    fontSize: typography.sizes.md,
+    fontWeight: '600',
+  },
+  emptyText: {
+    textAlign: 'center',
+    color: colors.gray[600],
+    fontSize: typography.sizes.md,
+    marginTop: spacing.lg,
+  },
+  buttonContainer: {
+    padding: spacing.lg,
+    backgroundColor: colors.backgroundLight,
+  },
+  addButton: {
+    alignItems: 'center',
+  },
+  addButtonText: {
+    marginTop: spacing.xs,
+    fontSize: typography.sizes.sm,
+    color: colors.textDark,
   },
 });
 

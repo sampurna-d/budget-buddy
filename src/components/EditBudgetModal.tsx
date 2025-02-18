@@ -1,196 +1,252 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
+  Modal,
   View,
   Text,
-  StyleSheet,
-  Modal,
-  TouchableOpacity,
   TextInput,
+  TouchableOpacity,
+  StyleSheet,
   Alert,
-  KeyboardAvoidingView,
-  Platform,
+  ScrollView,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors, spacing, typography } from '../constants/theme';
 import { supabase } from '../config/supabase';
+import { useAuth } from '../contexts/AuthContext';
+import { BudgetCategory, BUDGET_CATEGORIES } from '../constants/categories';
+
+interface Budget {
+  category: BudgetCategory;
+  amount: number;
+  spent: number;
+}
 
 interface EditBudgetModalProps {
   visible: boolean;
-  category: {
-    id: string;
-    category: string;
-    amount: number;
-    icon: keyof typeof MaterialCommunityIcons.glyphMap;
-    month: string;
-  };
+  budgets: Budget[];
   onClose: () => void;
-  onUpdate: () => void;
-  userId: string;
+  onSave: (updatedBudgets: Budget[]) => Promise<void>;
 }
 
-const EditBudgetModal: React.FC<EditBudgetModalProps> = ({
+const EditBudgetModal = ({
   visible,
-  category,
+  budgets,
   onClose,
-  onUpdate,
-  userId,
-}) => {
-  const [amount, setAmount] = useState('');
-  const [loading, setLoading] = useState(false);
+  onSave,
+}: EditBudgetModalProps) => {
+  const { user } = useAuth();
+  const [amounts, setAmounts] = useState<{ [key in BudgetCategory]?: string }>(
+    budgets.reduce((acc, budget) => ({
+      ...acc,
+      [budget.category]: budget.amount.toString()
+    }), {})
+  );
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  useEffect(() => {
-    if (category.amount > 0) {
-      setAmount(category.amount.toString());
-    } else {
-      setAmount('');
-    }
-  }, [category]);
-
-  const handleAmountChange = (text: string) => {
-    const cleanedText = text.replace(/[^0-9.]/g, '');
-    const parts = cleanedText.split('.');
-    if (parts.length > 2) return;
-    if (parts[1] && parts[1].length > 2) return;
-    setAmount(cleanedText);
+  const handleAmountChange = (category: BudgetCategory, value: string) => {
+    setAmounts(prev => ({
+      ...prev,
+      [category]: value
+    }));
   };
 
   const handleSave = async () => {
-    const numAmount = parseFloat(amount || '0');
-    if (isNaN(numAmount) || numAmount < 0) {
-      Alert.alert('Error', 'Please enter a valid amount');
-      return;
+    if (!user) return;
+
+    // Validate all amounts
+    const updatedBudgets: Budget[] = [];
+    for (const budget of budgets) {
+      const numAmount = parseFloat(amounts[budget.category] || '0');
+      if (isNaN(numAmount) || numAmount < 0) {
+        Alert.alert('Invalid Amount', `Please enter a valid amount for ${budget.category}`);
+        return;
+      }
+      updatedBudgets.push({
+        ...budget,
+        amount: numAmount
+      });
     }
 
-    setLoading(true);
+    setIsSubmitting(true);
     try {
+      const currentDate = new Date();
+      const firstDayOfMonth = new Date(
+        currentDate.getFullYear(),
+        currentDate.getMonth(),
+        1
+      ).toISOString();
+
+      // Update all budgets in a single batch
+      const updates = updatedBudgets.map(budget => ({
+        user_id: user.id,
+        category: budget.category,
+        amount: budget.amount,
+        month: firstDayOfMonth,
+        spent: budget.spent
+      }));
+
       const { error } = await supabase
         .from('budgets')
-        .upsert({
-          user_id: userId,
-          category: category.category,
-          amount: numAmount,
-          month: category.month,
-        }, {
+        .upsert(updates, {
           onConflict: 'user_id,category,month'
         });
 
-      if (error) {
-        console.error('Supabase error:', error);
-        throw error;
-      }
-      
-      onUpdate();
-      onClose();
-    } catch (error: any) {
-      console.error('Save error:', error);
-      Alert.alert('Error', error.message || 'Failed to update budget');
+      if (error) throw error;
+      await onSave(updatedBudgets);
+    } catch (error) {
+      console.error('Error saving budgets:', error);
+      Alert.alert('Error', 'Failed to save budgets');
     } finally {
-      setLoading(false);
+      setIsSubmitting(false);
     }
+  };
+
+  const getCategoryIcon = (category: BudgetCategory): keyof typeof MaterialCommunityIcons.glyphMap => {
+    const iconMap: { [key in BudgetCategory]: keyof typeof MaterialCommunityIcons.glyphMap } = {
+      'Food': 'food',
+      'Transportation': 'car',
+      'Housing': 'home',
+      'Entertainment': 'movie',
+      'Other': 'dots-horizontal'
+    };
+    return iconMap[category];
   };
 
   return (
     <Modal
       visible={visible}
       transparent
-      animationType="slide"
+      animationType="fade"
       onRequestClose={onClose}
     >
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.modalContainer}
-      >
+      <View style={styles.modalOverlay}>
         <View style={styles.modalContent}>
-          <View style={styles.header}>
-            <MaterialCommunityIcons
-              name={category.icon}
-              size={24}
-              color={colors.primary}
-            />
-            <Text style={styles.title}>{category.category}</Text>
-          </View>
+          <Text style={styles.title}>Edit Monthly Budgets</Text>
+          
+          <ScrollView style={styles.scrollView}>
+            {budgets.map(budget => (
+              <View key={budget.category} style={styles.budgetItem}>
+                <View style={styles.categoryHeader}>
+                  <MaterialCommunityIcons 
+                    name={getCategoryIcon(budget.category)} 
+                    size={24} 
+                    color={colors.primary} 
+                  />
+                  <Text style={styles.category}>{budget.category}</Text>
+                </View>
 
-          <Text style={styles.label}>Monthly Budget Amount</Text>
-          <TextInput
-            style={styles.input}
-            value={amount}
-            onChangeText={handleAmountChange}
-            keyboardType="decimal-pad"
-            placeholder="Enter amount"
-            editable={!loading}
-            autoFocus
-          />
+                <View style={styles.amountInput}>
+                  <Text style={styles.currencySymbol}>$</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={amounts[budget.category]}
+                    onChangeText={(value) => handleAmountChange(budget.category, value)}
+                    keyboardType="decimal-pad"
+                    placeholder="0.00"
+                    placeholderTextColor={colors.gray[400]}
+                  />
+                </View>
+              </View>
+            ))}
+          </ScrollView>
 
           <View style={styles.buttonContainer}>
             <TouchableOpacity
               style={[styles.button, styles.cancelButton]}
               onPress={onClose}
-              disabled={loading}
+              disabled={isSubmitting}
             >
               <Text style={styles.buttonText}>Cancel</Text>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.button, styles.saveButton]}
               onPress={handleSave}
-              disabled={loading}
+              disabled={isSubmitting}
             >
               <Text style={[styles.buttonText, styles.saveButtonText]}>
-                {loading ? 'Saving...' : 'Save'}
+                {isSubmitting ? 'Saving...' : 'Save All'}
               </Text>
             </TouchableOpacity>
           </View>
         </View>
-      </KeyboardAvoidingView>
+      </View>
     </Modal>
   );
 };
 
 const styles = StyleSheet.create({
-  modalContainer: {
+  modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'flex-end',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   modalContent: {
     backgroundColor: colors.backgroundLight,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
+    borderRadius: 12,
     padding: spacing.lg,
-    minHeight: 300,
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: spacing.lg,
+    width: '90%',
+    maxWidth: 400,
+    maxHeight: '80%',
   },
   title: {
-    fontSize: typography.sizes.lg,
+    fontSize: typography.sizes.xl,
     fontWeight: '600',
     color: colors.textDark,
-    marginLeft: spacing.md,
+    marginBottom: spacing.lg,
+    textAlign: 'center',
   },
-  label: {
-    fontSize: typography.sizes.md,
-    color: colors.gray[600],
-    marginBottom: spacing.sm,
+  scrollView: {
+    marginBottom: spacing.lg,
   },
-  input: {
+  budgetItem: {
+    marginBottom: spacing.lg,
     backgroundColor: colors.gray[100],
     padding: spacing.md,
     borderRadius: 8,
-    fontSize: typography.sizes.md,
-    marginBottom: spacing.lg,
+  },
+  categoryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
+  category: {
+    fontSize: typography.sizes.lg,
+    color: colors.textDark,
+    marginLeft: spacing.sm,
+    fontWeight: '500',
+  },
+  amountInput: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.gray[300],
+    borderRadius: 8,
+    paddingHorizontal: spacing.md,
+    backgroundColor: colors.backgroundLight,
+  },
+  currencySymbol: {
+    fontSize: typography.sizes.lg,
+    color: colors.gray[600],
+    marginRight: spacing.xs,
+  },
+  input: {
+    flex: 1,
+    fontSize: typography.sizes.lg,
+    color: colors.textDark,
+    padding: spacing.md,
   },
   buttonContainer: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'flex-end',
+    gap: spacing.sm,
   },
   button: {
-    flex: 1,
-    padding: spacing.md,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.lg,
     borderRadius: 8,
+    minWidth: 100,
     alignItems: 'center',
-    marginHorizontal: spacing.xs,
   },
   cancelButton: {
     backgroundColor: colors.gray[200],

@@ -1,271 +1,304 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  ScrollView,
+  Pressable,
+  Alert,
+} from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { colors, spacing, typography } from '../constants/theme';
+import { BUDGET_CATEGORIES, getCategoryColor, BudgetCategory } from '../constants/categories';
 import { supabase } from '../config/supabase';
 import { useAuth } from '../contexts/AuthContext';
+import { useTransactions } from '../hooks/useTransactions';
 import EditBudgetModal from '../components/EditBudgetModal';
+import { AIService } from '../services/aiService';
+import { NotificationService } from '../services/notificationService';
+import { Budget } from '../types/budget';
 
-interface BudgetCategory {
-  id: string;
-  category: string;
-  amount: number;
-  spent: number;
-  month: string;
-  icon: keyof typeof MaterialCommunityIcons.glyphMap;
-}
-
-const defaultCategories: Omit<BudgetCategory, 'id' | 'month'>[] = [
-  { category: 'Housing', amount: 0, spent: 0, icon: 'home' },
-  { category: 'Food', amount: 0, spent: 0, icon: 'food' },
-  { category: 'Transportation', amount: 0, spent: 0, icon: 'car' },
-  { category: 'Utilities', amount: 0, spent: 0, icon: 'lightning-bolt' },
-  { category: 'Entertainment', amount: 0, spent: 0, icon: 'movie' },
-  { category: 'Shopping', amount: 0, spent: 0, icon: 'cart' },
-  { category: 'Healthcare', amount: 0, spent: 0, icon: 'medical-bag' },
-  { category: 'Other', amount: 0, spent: 0, icon: 'dots-horizontal' },
-];
+const getCategoryIcon = (category: BudgetCategory): keyof typeof MaterialCommunityIcons.glyphMap => {
+  const iconMap: { [key in BudgetCategory]: keyof typeof MaterialCommunityIcons.glyphMap } = {
+    'Food': 'food',
+    'Transportation': 'car',
+    'Housing': 'home',
+    'Entertainment': 'movie',
+    'Other': 'dots-horizontal'
+  };
+  return iconMap[category];
+};
 
 const BudgetScreen = () => {
-  const [budgets, setBudgets] = useState<BudgetCategory[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [selectedCategory, setSelectedCategory] = useState<BudgetCategory | null>(null);
   const { user } = useAuth();
-  const currentMonth = new Date().toISOString().slice(0, 7); // YYYY-MM
+  const { transactions } = useTransactions();
+  const [budgets, setBudgets] = useState<Budget[]>([]);
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [showAmounts, setShowAmounts] = useState<{ [key: string]: boolean }>({});
 
   useEffect(() => {
     fetchBudgets();
-  }, []);
+    initializeNotifications();
+  }, [user]);
 
-  const fetchBudgets = async () => {
+  useEffect(() => {
+    if (transactions.length > 0 && budgets.length > 0) {
+      scheduleNotifications();
+    }
+  }, [transactions, budgets]);
+
+  const initializeNotifications = async () => {
     try {
-      const { data, error } = await supabase
-        .from('budgets')
-        .select('*')
-        .eq('user_id', user?.id)
-        .eq('month', currentMonth + '-01');
-
-      if (error) throw error;
-
-      if (data && data.length > 0) {
-        const formattedBudgets = data.map(budget => ({
-          ...budget,
-          icon: defaultCategories.find(cat => cat.category === budget.category)?.icon || 'dots-horizontal'
-        }));
-        setBudgets(formattedBudgets);
-      } else {
-        // Create initial budgets for each category
-        const { data: newBudgets, error: insertError } = await supabase
-          .from('budgets')
-          .insert(
-            defaultCategories.map(cat => ({
-              user_id: user?.id,
-              category: cat.category,
-              amount: 0,
-              spent: 0,
-              month: currentMonth + '-01'
-            }))
-          )
-          .select();
-
-        if (insertError) throw insertError;
-
-        if (newBudgets) {
-          const formattedBudgets = newBudgets.map(budget => ({
-            ...budget,
-            icon: defaultCategories.find(cat => cat.category === budget.category)?.icon || 'dots-horizontal'
-          }));
-          setBudgets(formattedBudgets);
-        }
+      const initialized = await NotificationService.initialize();
+      if (!initialized) {
+        Alert.alert(
+          'Notifications Disabled',
+          'Enable notifications to receive personalized budget insights and tips.'
+        );
       }
-    } catch (error: any) {
-      console.error('Fetch budgets error:', error);
-      Alert.alert('Error', 'Failed to load budgets');
-    } finally {
-      setLoading(false);
+    } catch (error) {
+      console.error('Error initializing notifications:', error);
     }
   };
 
-  const calculateProgress = (spent: number, amount: number) => {
-    if (amount === 0) return 0;
-    return Math.min((spent / amount) * 100, 100);
+  const scheduleNotifications = async () => {
+    try {
+      await NotificationService.scheduleRandomNotifications(transactions, budgets);
+    } catch (error) {
+      console.error('Error scheduling notifications:', error);
+    }
   };
 
-  const getProgressColor = (progress: number) => {
-    if (progress >= 100) return colors.error;
-    if (progress >= 80) return colors.warning;
-    return colors.secondary;
+  const fetchBudgets = async () => {
+    if (!user) return;
+
+    try {
+      const currentDate = new Date();
+      const firstDayOfMonth = new Date(currentDate.getFullYear(), currentDate.getMonth(), 1);
+      
+      const { data: budgetData, error: budgetError } = await supabase
+        .from('budgets')
+        .select('*')
+        .eq('user_id', user.id)
+        .eq('month', firstDayOfMonth.toISOString());
+
+      if (budgetError) throw budgetError;
+
+      // Initialize budgets for all categories
+      const initializedBudgets = BUDGET_CATEGORIES.map(category => {
+        const existingBudget = budgetData?.find(b => b.category === category);
+        return {
+          category,
+          amount: existingBudget?.amount || 0,
+          spent: existingBudget?.spent || 0
+        };
+      });
+
+      setBudgets(initializedBudgets);
+    } catch (error) {
+      console.error('Error fetching budgets:', error);
+    }
   };
 
-  const formatCurrency = (amount: number) => {
-    return `$${amount.toFixed(2)}`;
+  const toggleAmountVisibility = (category: string) => {
+    setShowAmounts(prev => ({
+      ...prev,
+      [category]: !prev[category]
+    }));
   };
 
-  const handleEditBudget = (category: BudgetCategory) => {
-    setSelectedCategory(category);
+  // Calculate total budget and spent amounts
+  const totalBudget = budgets.reduce((sum, budget) => sum + budget.amount, 0);
+  const totalSpent = budgets.reduce((sum, budget) => sum + budget.spent, 0);
+  const totalPercentSpent = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
+
+  const renderBudgetItem = (budget: Budget) => {
+    const percentSpent = budget.amount > 0 ? (budget.spent / budget.amount) * 100 : 0;
+    const progressColor = getCategoryColor(percentSpent);
+    const icon = getCategoryIcon(budget.category);
+
+    return (
+      <Pressable
+        key={budget.category}
+        style={styles.budgetItem}
+        onPress={() => toggleAmountVisibility(budget.category)}
+      >
+        <View style={styles.budgetHeader}>
+          <View style={styles.categoryContainer}>
+            <MaterialCommunityIcons 
+              name={icon} 
+              size={24} 
+              color={colors.primary} 
+              style={styles.categoryIcon}
+            />
+            <Text style={styles.categoryText}>{budget.category}</Text>
+          </View>
+        </View>
+
+        <View style={styles.progressContainer}>
+          <View 
+            style={[
+              styles.progressBar,
+              { width: `${Math.min(percentSpent, 100)}%`, backgroundColor: progressColor }
+            ]}
+          />
+        </View>
+
+        {showAmounts[budget.category] && (
+          <View style={styles.amountDetails}>
+            <Text style={styles.amountText}>
+              Budget: ${budget.amount.toFixed(2)}
+            </Text>
+            <Text style={styles.amountText}>
+              Remaining: ${(budget.amount - budget.spent).toFixed(2)}
+            </Text>
+            <Text style={styles.percentageText}>
+              {percentSpent.toFixed(1)}% spent
+            </Text>
+          </View>
+        )}
+      </Pressable>
+    );
   };
 
   return (
-    <ScrollView style={styles.container}>
+    <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>Monthly Budget</Text>
-        <Text style={styles.subtitle}>{new Date().toLocaleString('default', { month: 'long', year: 'numeric' })}</Text>
+        <TouchableOpacity
+          style={styles.editButton}
+          onPress={() => setShowEditModal(true)}
+        >
+          <MaterialCommunityIcons name="pencil" size={24} color={colors.primary} />
+        </TouchableOpacity>
       </View>
 
-      <View style={styles.totalCard}>
-        <Text style={styles.totalTitle}>Total Budget</Text>
-        <Text style={styles.totalAmount}>
-          {formatCurrency(budgets.reduce((sum, budget) => sum + budget.amount, 0))}
+      {/* Total Budget Indicator */}
+      <View style={styles.totalBudgetContainer}>
+        <View style={styles.batteryContainer}>
+          <View style={[styles.batteryLevel, { width: `${Math.min(totalPercentSpent, 100)}%` }]} />
+        </View>
+        <Text style={styles.totalBudgetText}>
+          ${(totalBudget - totalSpent).toFixed(2)} remaining of ${totalBudget.toFixed(2)}
         </Text>
-        <Text style={styles.totalSpent}>
-          Spent: {formatCurrency(budgets.reduce((sum, budget) => sum + budget.spent, 0))}
-        </Text>
       </View>
 
-      <View style={styles.categoriesContainer}>
-        {budgets.map((category) => (
-          <TouchableOpacity
-            key={category.id}
-            style={styles.categoryCard}
-            onPress={() => handleEditBudget(category)}
-          >
-            <View style={styles.categoryHeader}>
-              <View style={styles.categoryIcon}>
-                <MaterialCommunityIcons
-                  name={category.icon}
-                  size={24}
-                  color={colors.primary}
-                />
-              </View>
-              <View style={styles.categoryInfo}>
-                <Text style={styles.categoryName}>{category.category}</Text>
-                <Text style={styles.categoryAmount}>
-                  {formatCurrency(category.spent)} / {formatCurrency(category.amount)}
-                </Text>
-              </View>
-            </View>
-            
-            <View style={styles.progressContainer}>
-              <View style={styles.progressBar}>
-                <View
-                  style={[
-                    styles.progressFill,
-                    {
-                      width: `${calculateProgress(category.spent, category.amount)}%`,
-                      backgroundColor: getProgressColor(calculateProgress(category.spent, category.amount))
-                    }
-                  ]}
-                />
-              </View>
-            </View>
-          </TouchableOpacity>
-        ))}
-      </View>
+      <ScrollView style={styles.scrollView}>
+        {budgets.map(renderBudgetItem)}
+      </ScrollView>
 
-      {selectedCategory && (
-        <EditBudgetModal
-          visible={!!selectedCategory}
-          category={selectedCategory}
-          onClose={() => setSelectedCategory(null)}
-          onUpdate={fetchBudgets}
-          userId={user?.id || ''}
-        />
-      )}
-    </ScrollView>
+      <EditBudgetModal
+        visible={showEditModal}
+        onClose={() => setShowEditModal(false)}
+        budgets={budgets}
+        onSave={async (updatedBudgets) => {
+          await fetchBudgets();
+          setShowEditModal(false);
+        }}
+      />
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.gray[100],
+    backgroundColor: colors.backgroundLight,
+    padding: spacing.lg,
   },
   header: {
-    padding: spacing.lg,
-    backgroundColor: colors.primary,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.md,
   },
   title: {
     fontSize: typography.sizes.xl,
-    fontWeight: '700',
-    color: colors.textLight,
-  },
-  subtitle: {
-    fontSize: typography.sizes.md,
-    color: colors.gray[300],
-    marginTop: spacing.xs,
-  },
-  totalCard: {
-    margin: spacing.md,
-    padding: spacing.lg,
-    backgroundColor: colors.backgroundLight,
-    borderRadius: 12,
-    elevation: 2,
-  },
-  totalTitle: {
-    fontSize: typography.sizes.md,
-    color: colors.gray[600],
-  },
-  totalAmount: {
-    fontSize: typography.sizes.xxl,
-    fontWeight: '700',
-    color: colors.primary,
-    marginTop: spacing.xs,
-  },
-  totalSpent: {
-    fontSize: typography.sizes.md,
-    color: colors.gray[600],
-    marginTop: spacing.xs,
-  },
-  categoriesContainer: {
-    padding: spacing.md,
-  },
-  categoryCard: {
-    backgroundColor: colors.backgroundLight,
-    borderRadius: 12,
-    padding: spacing.md,
-    marginBottom: spacing.md,
-    elevation: 2,
-  },
-  categoryHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: spacing.md,
-  },
-  categoryIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: colors.gray[100],
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginRight: spacing.md,
-  },
-  categoryInfo: {
-    flex: 1,
-  },
-  categoryName: {
-    fontSize: typography.sizes.md,
     fontWeight: '600',
     color: colors.textDark,
   },
-  categoryAmount: {
-    fontSize: typography.sizes.sm,
-    color: colors.gray[600],
-    marginTop: 2,
+  editButton: {
+    padding: spacing.sm,
+  },
+  totalBudgetContainer: {
+    alignItems: 'center',
+    marginBottom: spacing.xl,
+  },
+  batteryContainer: {
+    width: '80%',
+    height: 24,
+    backgroundColor: colors.gray[200],
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginBottom: spacing.sm,
+  },
+  batteryLevel: {
+    height: '100%',
+    backgroundColor: colors.primary,
+  },
+  totalBudgetText: {
+    fontSize: typography.sizes.md,
+    color: colors.textDark,
+    fontWeight: '500',
+  },
+  scrollView: {
+    flex: 1,
+  },
+  budgetItem: {
+    backgroundColor: colors.backgroundLight,
+    borderRadius: 12,
+    padding: spacing.md,
+    marginBottom: spacing.md,
+    shadowColor: colors.gray[400],
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  budgetHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
+  categoryContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  categoryIcon: {
+    marginRight: spacing.sm,
+  },
+  categoryText: {
+    fontSize: typography.sizes.lg,
+    fontWeight: '600',
+    color: colors.textDark,
   },
   progressContainer: {
-    height: 24,
-    justifyContent: 'center',
-  },
-  progressBar: {
     height: 8,
     backgroundColor: colors.gray[200],
     borderRadius: 4,
     overflow: 'hidden',
   },
-  progressFill: {
+  progressBar: {
     height: '100%',
     borderRadius: 4,
+  },
+  amountDetails: {
+    marginTop: spacing.sm,
+    padding: spacing.sm,
+    backgroundColor: colors.gray[100],
+    borderRadius: 8,
+  },
+  amountText: {
+    fontSize: typography.sizes.sm,
+    color: colors.gray[600],
+    marginBottom: spacing.xs,
+  },
+  percentageText: {
+    fontSize: typography.sizes.sm,
+    fontWeight: '600',
+    color: colors.textDark,
   },
 });
 

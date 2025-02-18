@@ -4,6 +4,9 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuth } from '../contexts/AuthContext';
+import { SafeAreaView, StatusBar, Platform, View } from 'react-native';
+import { colors } from '../constants/theme';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 // Screens
 import AuthScreen from '../screens/AuthScreen';
@@ -11,6 +14,8 @@ import DashboardScreen from '../screens/DashboardScreen';
 import BudgetScreen from '../screens/BudgetScreen';
 import TransactionsScreen from '../screens/TransactionsScreen';
 import BillRemindersScreen from '../screens/BillRemindersScreen';
+import LinkedAccountsScreen from '../screens/LinkedAccountsScreen';
+import SystemSettingsScreen from '../screens/SystemSettingsScreen';
 
 const Tab = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
@@ -87,23 +92,58 @@ const AppNavigator = () => {
   }
 
   return (
-    <NavigationContainer>
-      <Stack.Navigator>
-        {user ? (
-          <Stack.Screen
-            name="Main"
-            component={TabNavigator}
-            options={{ headerShown: false }}
-          />
-        ) : (
-          <Stack.Screen
-            name="Auth"
-            component={AuthScreen}
-            options={{ headerShown: false }}
-          />
-        )}
-      </Stack.Navigator>
-    </NavigationContainer>
+    <SafeAreaProvider>
+      <SafeAreaView style={{ flex: 1, backgroundColor: colors.backgroundLight }}>
+        <StatusBar
+          barStyle={Platform.OS === 'ios' ? 'dark-content' : 'light-content'}
+          backgroundColor={colors.primary}
+        />
+        <NavigationContainer>
+          <Stack.Navigator
+            screenOptions={{
+              headerStyle: {
+                backgroundColor: colors.primary,
+              },
+              headerTintColor: colors.textLight,
+              contentStyle: {
+                backgroundColor: colors.backgroundLight,
+              },
+            }}
+          >
+            {!user ? (
+              // Auth stack
+              <Stack.Screen 
+                name="Auth" 
+                component={AuthScreen}
+                options={{ headerShown: false }}
+              />
+            ) : (
+              // Main app stack
+              <Stack.Screen
+                name="MainTabs"
+                component={TabNavigator}
+                options={{ headerShown: false }}
+              />
+            )}
+            <Stack.Screen 
+              name="LinkedAccounts" 
+              component={LinkedAccountsScreen}
+              options={{ title: 'Link Bank Account' }}
+            />
+            <Stack.Screen 
+              name="SystemSettings" 
+              component={SystemSettingsScreen}
+              options={{ title: 'System Settings' }}
+            />
+            <Stack.Screen 
+              name="Transactions" 
+              component={TransactionsScreen}
+              options={{ title: 'Transactions' }}
+            />
+          </Stack.Navigator>
+        </NavigationContainer>
+      </SafeAreaView>
+    </SafeAreaProvider>
   );
 };
 
